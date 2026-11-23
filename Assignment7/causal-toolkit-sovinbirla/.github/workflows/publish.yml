@@ -1,0 +1,77 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+      - name: Verify release tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+          import causal_toolkit_sovinbirla as toolkit
+
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          assert os.environ["RELEASE_TAG"] == f"v{version}", "Release tag must match pyproject.toml"
+          assert toolkit.__version__ == version, "Package and metadata versions must match"
+          PY
+      - name: Run tests before publishing
+        run: python -m pytest tests/ -v
+      - name: Build package
+        run: python -m build
+      - name: Check distribution
+        run: python -m twine check --strict dist/*
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN || secrets.MYKEY }}
+          TWINE_NON_INTERACTIVE: "1"
+        run: |
+          if [ -z "$TWINE_PASSWORD" ]; then
+            echo '::error::Add the PYPI_API_TOKEN (or MYKEY) repository secret before publishing.'
+            exit 1
+          fi
+          python -m twine upload dist/*
+      - name: Verify installation from PyPI
+        run: |
+          python -m venv /tmp/causal-toolkit-pypi
+          cd /tmp
+          for attempt in 1 2 3 4 5; do
+            if /tmp/causal-toolkit-pypi/bin/python -m pip install --no-cache-dir "causal-toolkit-sovinbirla==${GITHUB_REF_NAME#v}"; then
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then exit 1; fi
+            sleep 10
+          done
+          /tmp/causal-toolkit-pypi/bin/python - <<'PY'
+          import os
+          import causal_toolkit_sovinbirla as toolkit
+
+          assert toolkit.__version__ == os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          for name in toolkit.__all__:
+              assert callable(getattr(toolkit, name)), name
+          print("Published! All eight public functions import from the PyPI installation.")
+          PY

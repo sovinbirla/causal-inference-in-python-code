@@ -1,0 +1,49 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+      - name: Run tests
+        run: python -m pytest tests/ -v --cov=causal_toolkit_sovinbirla --cov-report=term-missing
+      - name: Build distributions
+        run: python -m build
+      - name: Check distribution metadata
+        run: python -m twine check --strict dist/*
+      - name: Verify installed wheel and public imports
+        run: |
+          python -m venv /tmp/causal-toolkit-smoke
+          /tmp/causal-toolkit-smoke/bin/python -m pip install dist/*.whl
+          cd /tmp
+          /tmp/causal-toolkit-smoke/bin/python - <<'PY'
+          from importlib.metadata import version
+          import causal_toolkit_sovinbirla as toolkit
+
+          assert toolkit.__version__ == version("causal-toolkit-sovinbirla")
+          for name in toolkit.__all__:
+              assert callable(getattr(toolkit, name)), name
+          print(f"Installed version {toolkit.__version__}; all eight public functions import.")
+          PY
